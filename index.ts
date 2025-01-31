@@ -92,7 +92,7 @@ function merkleRoot(buffers: Buffer[]): Buffer {
  * const time_cost = 5;
  * const hash = await memory_harden_hash(password, memory_cost_bytes, time_cost);
  */
-async function memory_harden_hash(password: string, memory_cost_bytes: number = 2 ** 16, time_cost: number = 5, salt: Buffer = randomBytes(32)): Promise<string> {
+async function memory_harden_hash(password: string, memory_cost_bytes: number = 2 ** 16, time_cost: number = 4, salt: Buffer = randomBytes(32)): Promise<string> {
 
     // Calculate the number of blocks needed to fill the memory matrix
     const numBlocks = Math.floor(memory_cost_bytes / BLOCK_SIZE_BYTES);
