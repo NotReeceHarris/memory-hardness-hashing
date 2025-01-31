@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from 'crypto';
-import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 
 // The size of a block in bytes (SHA3-256 output size)
 const BLOCK_SIZE_BYTES = 32;
@@ -11,8 +10,7 @@ const BLOCK_SIZE_BYTES = 32;
  */
 function hash(data: Buffer): Buffer {
     const hex = createHash('sha3-256').update(data).digest('hex'); // Compute SHA3-256 hash in hex format
-    const bytes = Buffer.from(hex, 'hex'); // Convert hex string to Buffer
-    return bytes;
+    return Buffer.from(hex, 'hex'); // Convert hex string to Buffer
 }
 
 /**
@@ -78,8 +76,8 @@ function merkleRoot(buffers: Buffer[]): Buffer {
 /**
  * Computes a memory-hardened hash of the password using a memory matrix and time cost.
  * @param password - The password to hash.
- * @param memory_cost_bytes - The memory cost in bytes (default is 65,536).
- * @param time_cost - The time cost (default is 3).
+ * @param memory_cost_bytes - The memory cost in bytes (default is 65,536 bytes or 64 KiB).
+ * @param time_cost - The time cost (default is 4).
  * @param salt - The salt to use for the hash (default is a random 32-byte buffer).
  * @returns The final hash as a hexadecimal string.
  * @throws Error if the memory cost is not a multiple of the block size.
@@ -88,13 +86,13 @@ function merkleRoot(buffers: Buffer[]): Buffer {
  * const password = 'password';
  * const hash = await memory_harden_hash(hashed)
  * 
- * // Custom options
+ * // Custom options (overkill)
  * const password = 'password';
- * const memory_cost_bytes = 2 ** 16; // 64 KiB
- * const time_cost = 3;
+ * const memory_cost_bytes = 2 ** 18; // 256 KiB
+ * const time_cost = 5;
  * const hash = await memory_harden_hash(password, memory_cost_bytes, time_cost);
  */
-async function memory_harden_hash(password: string, memory_cost_bytes: number = 2 ** 16, time_cost: number=3, salt: Buffer = randomBytes(32)): Promise<string> {
+async function memory_harden_hash(password: string, memory_cost_bytes: number = 2 ** 16, time_cost: number = 5, salt: Buffer = randomBytes(32)): Promise<string> {
 
     // Calculate the number of blocks needed to fill the memory matrix
     const numBlocks = Math.floor(memory_cost_bytes / BLOCK_SIZE_BYTES);
