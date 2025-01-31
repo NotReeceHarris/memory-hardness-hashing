@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
+import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 
 // The size of a block in bytes (SHA3-256 output size)
 const BLOCK_SIZE_BYTES = 32;
@@ -15,7 +16,7 @@ function hash(data: Buffer): Buffer {
 }
 
 /**
- * Selects a random buffer from the array based on the first 4 bytes of the input data.
+ * Selects a random buffer from the array based on the first 8 bytes of the input data.
  * @param array - The array of Buffers to choose from.
  * @param data - The input data used to derive the random index.
  * @returns A randomly selected Buffer from the array.
@@ -77,20 +78,30 @@ function merkleRoot(buffers: Buffer[]): Buffer {
 /**
  * Computes a memory-hardened hash of the password using a memory matrix and time cost.
  * @param password - The password to hash.
- * @param memory_cost_kib - The memory cost in KiB (determines the size of the memory matrix).
- * @param time_cost - The time cost (number of iterations to perform).
- * @param salt - The salt to use for the hash (default is a random 64-byte buffer).
+ * @param memory_cost_bytes - The memory cost in bytes (default is 65,536).
+ * @param time_cost - The time cost (default is 3).
+ * @param salt - The salt to use for the hash (default is a random 32-byte buffer).
  * @returns The final hash as a hexadecimal string.
  * @throws Error if the memory cost is not a multiple of the block size.
+ * @example
+ * // Default options
+ * const password = 'password';
+ * const hash = await memory_harden_hash(hashed)
+ * 
+ * // Custom options
+ * const password = 'password';
+ * const memory_cost_bytes = 2 ** 16; // 64 KiB
+ * const time_cost = 3;
+ * const hash = await memory_harden_hash(password, memory_cost_bytes, time_cost);
  */
-function memory_harden_hash(password: string, memory_cost_kib: number, time_cost: number, salt: Buffer = randomBytes(64)): string {
+async function memory_harden_hash(password: string, memory_cost_bytes: number = 2 ** 16, time_cost: number=3, salt: Buffer = randomBytes(32)): Promise<string> {
 
     // Calculate the number of blocks needed to fill the memory matrix
-    const numBlocks = Math.floor((memory_cost_kib * 1024) / BLOCK_SIZE_BYTES);
+    const numBlocks = Math.floor(memory_cost_bytes / BLOCK_SIZE_BYTES);
 
-    // Validate that the memory cost is a multiple of the block size
-    if ((memory_cost_kib * 1024) % BLOCK_SIZE_BYTES !== 0) {
-        throw new Error(`Memory cost (${memory_cost_kib} KiB) must be a multiple of the block size (${BLOCK_SIZE_BYTES} bytes).`);
+    if (memory_cost_bytes % BLOCK_SIZE_BYTES !== 0) {
+        let close = Math.ceil(memory_cost_bytes / BLOCK_SIZE_BYTES) * BLOCK_SIZE_BYTES
+        throw new Error(`Memory cost (${memory_cost_bytes} KiB) must be a multiple of the block size (${BLOCK_SIZE_BYTES} bytes) closes to inputed is ${close}.`);
     }
 
     // Fill the memory matrix with blocks derived from the password, salt, and index
@@ -111,7 +122,6 @@ function memory_harden_hash(password: string, memory_cost_kib: number, time_cost
     // Perform memory-hard computation for the specified number of iterations (time cost)
     for (let t = 0; t < time_cost; t++) {
         for (let i = 0; i < numBlocks; i++) {
-
             const curr_block = memory_matrix[i];
 
             // Get the previous block (or the last block if this is the first block)
@@ -127,49 +137,78 @@ function memory_harden_hash(password: string, memory_cost_kib: number, time_cost
             memory_matrix[i] = hash_output;
         }
     }
-
     // Compute the Merkle root of the memory matrix as the final hash
     let merkleRoot_result = merkleRoot(memory_matrix);
+
     // Hash the Merkle root to produce the final output
     let final_hash = hash(merkleRoot_result);
 
     // Return the final hash as a hexadecimal string
-    return `$m=${memory_cost_kib},$t=${time_cost}$${salt.toString('hex')}$${final_hash.toString('hex')}`;
+    return `$m=${memory_cost_bytes}$t=${time_cost}$${salt.toString('hex')}$${final_hash.toString('hex')}`;
 }
 
-function memory_harden_verify(hashed: string, plain: string): boolean {
-    const parts = hashed.split('$');
+/**
+ * Verifies a plaintext input against a hashed string.
+ *
+ * @param {string} hashed - The hashed string in the format `$memory_cost=<value>$time_cost=<value>$<salt>$<final_hash>`.
+ * @param {string} plain - The plaintext input to verify.
+ * @returns {Promise<boolean>} A promise that resolves to `true` if the plaintext matches the hashed string, or `false` otherwise.
+ * @throws {Error} If the hashed string is malformed or contains invalid values.
+ * @example
+ * const hashed = '$m=65536$t=3$randomsalt$finalhash';
+ * const plain = 'password';
+ * memory_harden_verify(hashed, plain).then(isMatch => {
+ *     console.log('Verification result:', isMatch); // true or false
+ * });
+ */
+async function memory_harden_verify(hashed: string, plain: string): Promise<boolean> {
+    try {
+        // Parse the hashed string into its components
+        const [memoryCostPart, timeCostPart, saltPart, finalHashPart] = hashed.trim().split('$').slice(1);
 
-    if (parts.length !== 5) {
+        // Validate the number of parts
+        if (!memoryCostPart || !timeCostPart || !saltPart || !finalHashPart) {
+            throw new Error('Invalid hashed string format');
+        }
+
+        // Extract memory cost, time cost, salt, and final hash
+        const memory_cost_bytes = parseInt(memoryCostPart.split('=')[1], 10);
+        const time_cost = parseInt(timeCostPart.split('=')[1], 10);
+        const salt = Buffer.from(saltPart, 'hex');
+        const final_hash = Buffer.from(finalHashPart, 'hex');
+
+        // Validate parsed values
+        if (isNaN(memory_cost_bytes) || isNaN(time_cost) || salt.length === 0 || final_hash.length === 0) {
+            throw new Error('Invalid hashed string values');
+        }
+
+        // Compute the hash for the plaintext input
+        const computed_hash = await memory_harden_hash(plain, memory_cost_bytes, time_cost, salt);
+
+        // Extract the final hash from the computed hash
+        const computed_final_hash = Buffer.from(computed_hash.split('$').slice(1)[3], 'hex');
+
+        // Compare the final hashes
+        return final_hash.equals(computed_final_hash);
+    } catch (error) {
+        console.error('Error during verification:', error);
         return false;
     }
-
-    const memory_cost_kib = parseInt(parts[1].split('=')[1]);
-    const time_cost = parseInt(parts[2].split('=')[1]);
-    const salt = Buffer.from(parts[3], 'hex');
-    const final_hash = Buffer.from(parts[4], 'hex');
-
-    const computed_hash = memory_harden_hash(plain, memory_cost_kib, time_cost, salt);
-    return final_hash.equals(Buffer.from(computed_hash.split('$')[4], 'hex'));
-
 }
 
 // Example usage: Compute a memory-hardened hash with 64 MiB memory cost and 3 iterations
 (async () => {
 
     const password = 'password';
-    const memory_cost_kib = 2 ** 16; // 64 MiB
-    const time_cost = 3;
 
     console.time('Hashing Time');
-    const hash = memory_harden_hash(password, memory_cost_kib, time_cost);
+    const hash = await memory_harden_hash(password);
     console.timeEnd('Hashing Time');
+    console.log('hash:', hash, '\n');
 
     console.time('Verifing Time');
-    const verify = memory_harden_verify(hash, password);
+    const verify = await memory_harden_verify(hash, password);
     console.timeEnd('Verifing Time');
-
-    console.log('hash', hash);
-    console.log('verified', verify ? 'yes' : 'no')
+    console.log('verified:', verify ? 'yes' : 'no')
 
 })();
