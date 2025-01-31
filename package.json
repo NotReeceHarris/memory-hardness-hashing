@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "test": "npx ts-node index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.12.0"
+  }
+}
