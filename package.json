@@ -3,6 +3,10 @@
     "test": "npx ts-node index.ts"
   },
   "devDependencies": {
+    "@types/blake2": "^4.0.4",
     "@types/node": "^22.12.0"
+  },
+  "dependencies": {
+    "blake2": "^5.0.0"
   }
 }

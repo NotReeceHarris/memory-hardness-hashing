@@ -1,4 +1,5 @@
-import { createHash, randomBytes } from 'crypto';
+import { randomBytes } from 'crypto';
+import { createKeyedHash } from 'blake2';
 
 // The size of a block in bytes (SHA3-256 output size)
 const BLOCK_SIZE_BYTES = 32;
@@ -8,9 +9,9 @@ const BLOCK_SIZE_BYTES = 32;
  * @param password - The input to hash, which can be a Buffer.
  * @returns A Buffer containing the hashed output.
  */
-function hash(data: Buffer): Buffer {
-    const hex = createHash('sha3-256').update(data).digest('hex'); // Compute SHA3-256 hash in hex format
-    return Buffer.from(hex, 'hex'); // Convert hex string to Buffer
+function hash(data: Buffer, salt: Buffer): Buffer {
+    const blake = createKeyedHash('blake2b', salt).update(data).digest()
+    return blake.subarray(0, BLOCK_SIZE_BYTES); // Convert hex string to Buffer
 }
 
 /**
@@ -20,13 +21,13 @@ function hash(data: Buffer): Buffer {
  * @returns A randomly selected Buffer from the array.
  * @throws Error if the array is empty.
  */
-function random(array: Buffer[], data: Buffer): Buffer {
+function random(array: Buffer[], data: Buffer, salt: Buffer): Buffer {
     if (array.length === 0) {
         throw new Error('Array cannot be empty');
     }
 
     // Generate a 64-bit random value from the input data
-    const hash = createHash('sha3-512').update(data).digest();
+    const hash = createKeyedHash('blake2b', salt).update(data).digest();
 
     // Convert the hash to a 64-bit unsigned integer using first 8 bytes of hash
     let randomValue: bigint = hash.readBigUInt64BE(0);
@@ -47,13 +48,13 @@ function random(array: Buffer[], data: Buffer): Buffer {
  * @returns The Merkle root as a Buffer.
  * @throws Error if the array of buffers is empty.
  */
-function merkleRoot(buffers: Buffer[]): Buffer {
+function merkleRoot(buffers: Buffer[], salt: Buffer): Buffer {
     if (buffers.length === 0) {
         throw new Error('Array of buffers cannot be empty');
     }
 
     // Hash each buffer to create leaf nodes of the Merkle tree
-    let level = buffers.map(buffer => hash(buffer));
+    let level = buffers.map(buffer => hash(buffer, salt));
 
     // Build the Merkle tree level by level until only one hash remains (the root)
     while (level.length > 1) {
@@ -64,7 +65,7 @@ function merkleRoot(buffers: Buffer[]): Buffer {
             const right = (i + 1 < level.length) ? level[i + 1] : left;
             // Combine and hash the left and right children
             const combined = Buffer.concat([left, right]);
-            nextLevel.push(hash(combined));
+            nextLevel.push(hash(combined, salt));
         }
         level = nextLevel;
     }
@@ -78,9 +79,11 @@ function merkleRoot(buffers: Buffer[]): Buffer {
  * @param password - The password to hash.
  * @param memory_cost_bytes - The memory cost in bytes (default is 65,536 bytes or 64 KiB).
  * @param time_cost - The time cost (default is 4).
- * @param salt - The salt to use for the hash (default is a random 32-byte buffer).
+ * @param salt - The salt to use for the hash (must be 64 bytes).
  * @returns The final hash as a hexadecimal string.
  * @throws Error if the memory cost is not a multiple of the block size.
+ * @throws Error if the time cost is less than 1.
+ * @throws Error if the salt is not 64 bytes.
  * @example
  * // Default options
  * const password = 'password';
@@ -92,7 +95,7 @@ function merkleRoot(buffers: Buffer[]): Buffer {
  * const time_cost = 5;
  * const hash = await memory_harden_hash(password, memory_cost_bytes, time_cost);
  */
-async function memory_harden_hash(password: string, memory_cost_bytes: number = 2 ** 16, time_cost: number = 4, salt: Buffer = randomBytes(32)): Promise<string> {
+async function memory_harden_hash(password: string, memory_cost_bytes: number = 2 ** 16, time_cost: number = 4, salt: Buffer = randomBytes(64)): Promise<string> {
 
     // Calculate the number of blocks needed to fill the memory matrix
     const numBlocks = Math.floor(memory_cost_bytes / BLOCK_SIZE_BYTES);
@@ -102,6 +105,14 @@ async function memory_harden_hash(password: string, memory_cost_bytes: number = 
         throw new Error(`Memory cost (${memory_cost_bytes} KiB) must be a multiple of the block size (${BLOCK_SIZE_BYTES} bytes) closes to inputed is ${close}.`);
     }
 
+    if (time_cost < 1) {
+        throw new Error('Time cost must be at least 1');
+    }
+
+    if (salt.byteLength !== 64) {
+        throw new Error('Salt must be 64 bytes');
+    }
+
     // Fill the memory matrix with blocks derived from the password, salt, and index
     const memory_matrix = Array.from({ length: numBlocks }, (_, i) => {
         const buffer = Buffer.concat([
@@ -109,7 +120,7 @@ async function memory_harden_hash(password: string, memory_cost_bytes: number = 
             salt,
             Buffer.from(i.toString())
         ]);
-        return hash(buffer);
+        return hash(buffer, salt);
     });
 
     // Validate that the memory matrix has the correct number of blocks
@@ -125,21 +136,21 @@ async function memory_harden_hash(password: string, memory_cost_bytes: number = 
             // Get the previous block (or the last block if this is the first block)
             const prev_block = i > 0 ? memory_matrix[i - 1] : memory_matrix[numBlocks - 1];
             // Select a random block from the memory matrix
-            const rand_block = random(memory_matrix, curr_block);
+            const rand_block = random(memory_matrix, curr_block, salt);
 
             // Combine the previous block and the random block, then hash the result
             const hash_input = Buffer.concat([prev_block, rand_block]);
-            const hash_output = hash(hash_input);
+            const hash_output = hash(hash_input, salt);
 
             // Update the current block in the memory matrix
             memory_matrix[i] = hash_output;
         }
     }
     // Compute the Merkle root of the memory matrix as the final hash
-    let merkleRoot_result = merkleRoot(memory_matrix);
+    let merkleRoot_result = merkleRoot(memory_matrix, salt);
 
     // Hash the Merkle root to produce the final output
-    let final_hash = hash(merkleRoot_result);
+    let final_hash = hash(merkleRoot_result, salt);
 
     // Return the final hash as a hexadecimal string
     return `$m=${memory_cost_bytes}$t=${time_cost}$${salt.toString('hex')}$${final_hash.toString('hex')}`;
@@ -208,5 +219,5 @@ async function memory_harden_verify(hashed: string, plain: string): Promise<bool
     const verify = await memory_harden_verify(hash, password);
     console.timeEnd('Verifing Time');
     console.log('verified:', verify ? 'yes' : 'no')
-
+    
 })();
